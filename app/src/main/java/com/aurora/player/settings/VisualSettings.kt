@@ -1,6 +1,7 @@
 package com.aurora.player.settings
 
 import android.content.Context
+import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -120,6 +121,7 @@ data class VisualSettings(
     val swipeToSkip: Boolean = true,
     val clock: Boolean = false,
     val autoSurprise: Boolean = false,
+    val swipePresets: Boolean = true,
 
     // Energia (tutto spento di default)
     val fpsLimit: FpsLimit = FpsLimit.MAX,
@@ -187,19 +189,26 @@ class SettingsStore(context: Context) {
         save(n)
     }
 
-    private inline fun <reified E : Enum<E>> enumPref(key: String, def: E): E =
-        prefs.getString(key, null)?.let { name -> enumValues<E>().firstOrNull { it.name == name } } ?: def
+    private fun load(): VisualSettings = prefs.readSettings()
 
-    private inline fun <reified E : Enum<E>> enumSet(key: String, def: Set<E>): Set<E> {
-        val raw = prefs.getString(key, null) ?: return def
+    private fun save(s: VisualSettings) = prefs.writeSettings(s)
+}
+
+private inline fun <reified E : Enum<E>> SharedPreferences.enumPref(key: String, def: E): E =
+    getString(key, null)?.let { name -> enumValues<E>().firstOrNull { it.name == name } } ?: def
+
+private inline fun <reified E : Enum<E>> SharedPreferences.enumSet(key: String, def: Set<E>): Set<E> {
+        val raw = getString(key, null) ?: return def
         if (raw.isEmpty()) return emptySet()
         return raw.split(',').mapNotNull { n -> enumValues<E>().firstOrNull { it.name == n } }.toSet()
     }
 
-    private fun intList(key: String, def: List<Int>): List<Int> =
-        prefs.getString(key, null)?.split(',')?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == def.size } ?: def
+private fun SharedPreferences.intList(key: String, def: List<Int>): List<Int> =
+    getString(key, null)?.split(',')?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == def.size } ?: def
 
-    private fun load(): VisualSettings {
+/** Legge un aspetto completo da un file di preferenze (impostazioni correnti o preset salvato). */
+fun SharedPreferences.readSettings(): VisualSettings {
+        val prefs = this
         val d = VisualSettings()
         // Migrazione dalla v0.2: "Barre" e "Oscilloscopio" ora sono livelli
         var style = enumPref("style", d.style)
@@ -252,6 +261,7 @@ class SettingsStore(context: Context) {
             swipeToSkip = prefs.getBoolean("swipeToSkip", d.swipeToSkip),
             clock = prefs.getBoolean("clock", d.clock),
             autoSurprise = prefs.getBoolean("autoSurprise", d.autoSurprise),
+            swipePresets = prefs.getBoolean("swipePresets", d.swipePresets),
             fpsLimit = enumPref("fpsLimit", d.fpsLimit),
             idleSlowdown = prefs.getBoolean("idleSlowdown", d.idleSlowdown),
             sleepWhenPaused = prefs.getBoolean("sleepWhenPaused", d.sleepWhenPaused),
@@ -265,8 +275,8 @@ class SettingsStore(context: Context) {
         )
     }
 
-    private fun save(s: VisualSettings) {
-        prefs.edit()
+fun SharedPreferences.writeSettings(s: VisualSettings) {
+        edit()
             .putString("style", s.style.name)
             .putString("layers", s.layers.joinToString(",") { it.name })
             .putString("colorMode", s.colorMode.name)
@@ -307,6 +317,7 @@ class SettingsStore(context: Context) {
             .putBoolean("swipeToSkip", s.swipeToSkip)
             .putBoolean("clock", s.clock)
             .putBoolean("autoSurprise", s.autoSurprise)
+            .putBoolean("swipePresets", s.swipePresets)
             .putString("fpsLimit", s.fpsLimit.name)
             .putBoolean("idleSlowdown", s.idleSlowdown)
             .putBoolean("sleepWhenPaused", s.sleepWhenPaused)
@@ -319,4 +330,3 @@ class SettingsStore(context: Context) {
             .putBoolean("emergency", s.emergency)
             .apply()
     }
-}

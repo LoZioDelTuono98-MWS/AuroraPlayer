@@ -31,6 +31,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -53,6 +56,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Bookmarks
 import androidx.compose.material.icons.rounded.Eco
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
@@ -66,6 +70,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.FloatState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.LongState
@@ -111,7 +116,9 @@ import com.aurora.player.settings.ecoActive
 import com.aurora.player.settings.effective
 import com.aurora.player.settings.surprise
 import com.aurora.player.settings.InfoMode
+import com.aurora.player.settings.PresetStore
 import com.aurora.player.settings.SettingsStore
+import com.aurora.player.settings.UserPreset
 import com.aurora.player.settings.VisualizerStyle
 import com.aurora.player.ui.glass.GlassIconButton
 import com.aurora.player.ui.glass.LiquidGlass
@@ -126,6 +133,7 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
@@ -144,10 +152,14 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 }
 
 @Composable
-fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Boolean, onRequestMic: () -> Unit) {
+fun PlayerScreen(store: SettingsStore, presetStore: PresetStore, analyzer: AudioAnalyzer, micGranted: Boolean, onRequestMic: () -> Unit) {
     val context = LocalContext.current
     val settings by store.settings.collectAsStateWithLifecycle()
     val track by NowPlaying.track.collectAsStateWithLifecycle()
+    val userPresets by presetStore.presets.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    var presetCursor by remember { mutableIntStateOf(-1) }
+    var showPresetStrip by remember { mutableStateOf(false) }
 
     // ---------- Energia ----------
     val lowBattery by produceState(false) {
@@ -289,6 +301,11 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
             toast = null
         }
     }
+    fun applyPreset(p: UserPreset) {
+        presetCursor = userPresets.indexOfFirst { it.id == p.id }
+        scope.launch { presetStore.apply(p.id) }
+        toast = p.name
+    }
     LaunchedEffect(infoPoke, eff.infoMode) {
         if (eff.infoMode == InfoMode.AUTO) {
             delay(6000)
@@ -337,6 +354,25 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
                                 NowPlaying.next(); skipIcon = Icons.Rounded.SkipNext; skipCount++
                             } else if (total > th) {
                                 NowPlaying.previous(); skipIcon = Icons.Rounded.SkipPrevious; skipCount++
+                            }
+                        },
+                    ) { change, amount ->
+                        total += amount
+                        change.consume()
+                    }
+                }
+                .pointerInput(eff.swipePresets, userPresets) {
+                    if (!eff.swipePresets || userPresets.isEmpty()) return@pointerInput
+                    var total = 0f
+                    detectVerticalDragGestures(
+                        onDragStart = { total = 0f },
+                        onDragEnd = {
+                            val th = 90.dp.toPx()
+                            val n = userPresets.size
+                            val step = if (total < -th) 1 else if (total > th) -1 else 0
+                            if (step != 0) {
+                                val next = ((if (presetCursor < 0) (if (step > 0) -1 else 0) else presetCursor) + step + n) % n
+                                applyPreset(userPresets[next])
                             }
                         },
                     ) { change, amount ->
@@ -425,6 +461,13 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 GlassIconButton(
+                    Icons.Rounded.Bookmarks, "I miei preset", hazeState,
+                    if (showPresetStrip) Color.White else colors.c1, null, size = 42.dp,
+                ) {
+                    showPresetStrip = !showPresetStrip
+                    poke()
+                }
+                GlassIconButton(
                     Icons.Rounded.Eco, "Risparmio di emergenza", hazeState,
                     if (ecoOn) Color(0xFF00E676) else colors.c1, null, size = 42.dp,
                 ) {
@@ -435,6 +478,31 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
                 }
                 GlassIconButton(Icons.Rounded.Tune, "Impostazioni", hazeState, colors.c1, null, size = 42.dp) { showSettings = true }
             }
+        }
+
+        // ---- Striscia dei preset ----
+        AnimatedVisibility(
+            visible = showPresetStrip && controlsVisible,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .windowInsetsPadding(WindowInsets.displayCutout)
+                .padding(top = 70.dp, start = 16.dp, end = 16.dp),
+            enter = fadeIn() + slideInVertically { -it / 2 },
+            exit = fadeOut() + slideOutVertically { -it / 2 },
+        ) {
+            PresetStrip(
+                presets = userPresets,
+                hazeState = hazeState,
+                accent = colors.c1,
+                activeIndex = presetCursor,
+                onPick = { p -> applyPreset(p); poke() },
+                onSave = {
+                    val name = presetStore.nextDefaultName()
+                    scope.launch { presetStore.saveCurrent(name) }
+                    toast = "Salvato come \"$name\""
+                    poke()
+                },
+            )
         }
 
         // ---- Indicatore eco sempre visibile (piccolo) ----
@@ -495,7 +563,7 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
                 exit = fadeOut() + slideOutVertically { it / 2 },
             ) {
                 Text(
-                    "Doppio tocco: stile  •  Scorri: brano  •  Tieni premuto: impostazioni",
+                    if (userPresets.isNotEmpty() && eff.swipePresets) "Doppio tocco: stile  •  ← →: brano  •  ↑ ↓: preset" else "Doppio tocco: stile  •  Scorri: brano  •  Tieni premuto: impostazioni",
                     color = Color.White.copy(alpha = 0.5f),
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 12.dp),
@@ -514,7 +582,7 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
     }
 
     if (showSettings) {
-        SettingsSheet(store = store, s = settings, lowBattery = lowBattery, onDismiss = {
+        SettingsSheet(store = store, presetStore = presetStore, s = settings, lowBattery = lowBattery, onDismiss = {
             showSettings = false
             poke()
         })
@@ -669,5 +737,60 @@ private fun ClockOverlay() {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(time, color = Color.White.copy(alpha = 0.92f), fontSize = 64.sp, fontWeight = FontWeight.Thin, letterSpacing = 2.sp)
         Text(date, color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp, letterSpacing = 1.sp)
+    }
+}
+
+@Composable
+private fun PresetStrip(
+    presets: List<UserPreset>,
+    hazeState: HazeState,
+    accent: Color,
+    activeIndex: Int,
+    onPick: (UserPreset) -> Unit,
+    onSave: () -> Unit,
+) {
+    LiquidGlass(hazeState, Modifier.widthIn(max = 520.dp).height(48.dp), RoundedCornerShape(50), accent) {
+        Row(
+            Modifier
+                .fillMaxHeight()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Box(
+                Modifier
+                    .height(36.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.White)
+                    .clickable(onClick = onSave)
+                    .padding(horizontal = 14.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text("+ Salva", color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
+            if (presets.isEmpty()) {
+                Text("Salva l'aspetto attuale per ritrovarlo qui", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 8.dp))
+            }
+            presets.forEachIndexed { i, p ->
+                val active = i == activeIndex
+                Row(
+                    Modifier
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(if (active) Color.White.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.06f))
+                        .clickable { onPick(p) }
+                        .padding(start = 6.dp, end = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(Brush.linearGradient(p.preview.map { Color(it) }))
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(p.name, color = Color.White, fontSize = 13.sp, maxLines = 1)
+                }
+            }
+        }
     }
 }

@@ -4,7 +4,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,7 +25,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -56,6 +60,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aurora.player.logo.LogoFactory
 import com.aurora.player.settings.BackgroundMode
 import com.aurora.player.settings.ColorMode
@@ -68,7 +73,9 @@ import com.aurora.player.settings.LogoHalo
 import com.aurora.player.settings.LogoSource
 import com.aurora.player.settings.ParticleStyle
 import com.aurora.player.settings.ScenePresets
+import com.aurora.player.settings.PresetStore
 import com.aurora.player.settings.SettingsStore
+import com.aurora.player.settings.UserPreset
 import com.aurora.player.settings.VisualSettings
 import com.aurora.player.settings.VisualizerStyle
 import com.aurora.player.util.ImageFiles
@@ -77,9 +84,14 @@ import kotlin.math.roundToInt
 
 private val Tabs = listOf("Scene", "Player", "Colori", "Sfondo", "Logo", "Effetti", "Schermo", "Energia")
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun SettingsSheet(store: SettingsStore, s: VisualSettings, lowBattery: Boolean, onDismiss: () -> Unit) {
+fun SettingsSheet(store: SettingsStore, presetStore: PresetStore, s: VisualSettings, lowBattery: Boolean, onDismiss: () -> Unit) {
+    val userPresets by presetStore.presets.collectAsStateWithLifecycle()
+    var naming by remember { mutableStateOf<UserPreset?>(null) }   // preset da rinominare
+    var newName by remember { mutableStateOf<String?>(null) }      // nome del nuovo preset in creazione
+    var managing by remember { mutableStateOf<UserPreset?>(null) }
+    var appliedMsg by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
@@ -125,6 +137,52 @@ fun SettingsSheet(store: SettingsStore, s: VisualSettings, lowBattery: Boolean, 
             ) {
                 when (tab) {
                     0 -> {
+                        SectionTitle("I miei preset")
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Column(
+                                Modifier
+                                    .width(92.dp)
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .clickable { newName = presetStore.nextDefaultName() },
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Box(
+                                    Modifier
+                                        .size(92.dp, 64.dp)
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .background(Color.White),
+                                    contentAlignment = Alignment.Center,
+                                ) { Text("+", color = Color.Black, fontSize = 30.sp, fontWeight = FontWeight.Light) }
+                                Text("Salva attuale", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                            }
+                            userPresets.forEach { p ->
+                                Column(
+                                    Modifier
+                                        .width(92.dp)
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .combinedClickable(
+                                            onClick = {
+                                                scope.launch { presetStore.apply(p.id) }
+                                                appliedMsg = "Applicato: ${p.name}"
+                                            },
+                                            onLongClick = { managing = p },
+                                        ),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                ) {
+                                    Box(
+                                        Modifier
+                                            .size(92.dp, 64.dp)
+                                            .clip(RoundedCornerShape(18.dp))
+                                            .background(Brush.linearGradient(p.preview.map { Color(it) }))
+                                    )
+                                    Text(p.name, fontSize = 12.sp, maxLines = 1, modifier = Modifier.padding(top = 6.dp))
+                                }
+                            }
+                        }
+                        Text(
+                            appliedMsg ?: if (userPresets.isEmpty()) "Salva l'aspetto che hai creato per richiamarlo quando vuoi." else "Tocca per applicare, tieni premuto per rinominare, aggiornare o eliminare.",
+                            fontSize = 12.sp, color = Color.White.copy(alpha = 0.6f),
+                        )
                         Button(
                             onClick = { store.update { surprise(it) } },
                             modifier = Modifier.fillMaxWidth().height(50.dp),
@@ -262,7 +320,8 @@ fun SettingsSheet(store: SettingsStore, s: VisualSettings, lowBattery: Boolean, 
                             fontSize = 12.sp, color = Color.White.copy(alpha = 0.6f),
                         )
                         SwitchRow("Pulsanti di controllo", s.showControls) { v -> store.update { it.copy(showControls = v) } }
-                        SwitchRow("Scorri per cambiare brano", s.swipeToSkip) { v -> store.update { it.copy(swipeToSkip = v) } }
+                        SwitchRow("Scorri a destra/sinistra per cambiare brano", s.swipeToSkip) { v -> store.update { it.copy(swipeToSkip = v) } }
+                        SwitchRow("Scorri su/giù per cambiare preset", s.swipePresets) { v -> store.update { it.copy(swipePresets = v) } }
                         SwitchRow("Orologio", s.clock) { v -> store.update { it.copy(clock = v) } }
                         TextButton(onClick = {
                             store.update {
@@ -312,6 +371,93 @@ fun SettingsSheet(store: SettingsStore, s: VisualSettings, lowBattery: Boolean, 
             }
         }
     }
+
+    // ---- Dialoghi dei preset ----
+    newName?.let { current ->
+        NameDialog(
+            title = "Salva preset",
+            initial = current,
+            confirm = "Salva",
+            onDismiss = { newName = null },
+            onConfirm = { n ->
+                scope.launch { presetStore.saveCurrent(n) }
+                appliedMsg = "Salvato: ${n.ifBlank { current }}"
+                newName = null
+            },
+        )
+    }
+    naming?.let { p ->
+        NameDialog(
+            title = "Rinomina",
+            initial = p.name,
+            confirm = "Ok",
+            onDismiss = { naming = null },
+            onConfirm = { n -> presetStore.rename(p.id, n); naming = null },
+        )
+    }
+    managing?.let { p ->
+        AlertDialog(
+            onDismissRequest = { managing = null },
+            containerColor = Color(0xFF16161E),
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
+            title = { Text(p.name) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { naming = p; managing = null }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Rinomina", color = Color.White)
+                    }
+                    OutlinedButton(onClick = {
+                        scope.launch { presetStore.saveCurrent(p.name, overwriteId = p.id) }
+                        appliedMsg = "Aggiornato: ${p.name}"
+                        managing = null
+                    }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Aggiorna con l'aspetto attuale", color = Color.White)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { presetStore.move(p.id, -1) }, modifier = Modifier.weight(1f)) {
+                            Text("← Sposta", color = Color.White)
+                        }
+                        OutlinedButton(onClick = { presetStore.move(p.id, 1) }, modifier = Modifier.weight(1f)) {
+                            Text("Sposta →", color = Color.White)
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            scope.launch { presetStore.delete(p.id) }
+                            managing = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF3D3D), contentColor = Color.Black),
+                    ) { Text("Elimina") }
+                }
+            },
+            confirmButton = { TextButton(onClick = { managing = null }) { Text("Chiudi", color = Color.White) } },
+        )
+    }
+}
+
+@Composable
+private fun NameDialog(title: String, initial: String, confirm: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF16161E),
+        titleContentColor = Color.White,
+        textContentColor = Color.White,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it.take(28) },
+                singleLine = true,
+                label = { Text("Nome") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(text) }) { Text(confirm, color = Color.White) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Annulla", color = Color.White.copy(alpha = 0.7f)) } },
+    )
 }
 
 @Composable

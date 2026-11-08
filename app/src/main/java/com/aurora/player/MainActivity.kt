@@ -28,6 +28,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.aurora.player.audio.AudioAnalyzer
 import com.aurora.player.media.NowPlaying
 import com.aurora.player.media.Perms
+import com.aurora.player.settings.PresetStore
 import com.aurora.player.settings.SettingsStore
 import com.aurora.player.ui.PermissionScreen
 import com.aurora.player.ui.PlayerScreen
@@ -38,6 +39,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         hideSystemBars()
         val store = SettingsStore(applicationContext)
+        val presets = PresetStore(applicationContext, store)
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -48,7 +50,7 @@ class MainActivity : ComponentActivity() {
                     surface = Color(0xFF121218),
                 )
             ) {
-                AppRoot(store)
+                AppRoot(store, presets)
             }
         }
     }
@@ -66,7 +68,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun AppRoot(store: SettingsStore) {
+fun AppRoot(store: SettingsStore, presets: PresetStore) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("aurora_app", Context.MODE_PRIVATE) }
     val analyzer = remember { AudioAnalyzer() }
@@ -110,6 +112,6 @@ fun AppRoot(store: SettingsStore) {
             prefs.edit().putBoolean("onboarded", true).apply()
         }
     } else {
-        PlayerScreen(store, analyzer, micOk, requestMic)
+        PlayerScreen(store, presets, analyzer, micOk, requestMic)
     }
 }
