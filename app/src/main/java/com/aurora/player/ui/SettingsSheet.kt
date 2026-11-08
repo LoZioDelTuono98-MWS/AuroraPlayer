@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -58,6 +59,9 @@ import androidx.compose.ui.unit.sp
 import com.aurora.player.logo.LogoFactory
 import com.aurora.player.settings.BackgroundMode
 import com.aurora.player.settings.ColorMode
+import com.aurora.player.settings.FpsLimit
+import com.aurora.player.settings.Layer
+import com.aurora.player.settings.surprise
 import com.aurora.player.settings.InfoMode
 import com.aurora.player.settings.LogoEdge
 import com.aurora.player.settings.LogoHalo
@@ -71,11 +75,11 @@ import com.aurora.player.util.ImageFiles
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-private val Tabs = listOf("Scene", "Colori", "Sfondo", "Logo", "Effetti", "Schermo")
+private val Tabs = listOf("Scene", "Player", "Colori", "Sfondo", "Logo", "Effetti", "Schermo", "Energia")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsSheet(store: SettingsStore, s: VisualSettings, onDismiss: () -> Unit) {
+fun SettingsSheet(store: SettingsStore, s: VisualSettings, lowBattery: Boolean, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
@@ -121,6 +125,12 @@ fun SettingsSheet(store: SettingsStore, s: VisualSettings, onDismiss: () -> Unit
             ) {
                 when (tab) {
                     0 -> {
+                        Button(
+                            onClick = { store.update { surprise(it) } },
+                            modifier = Modifier.fillMaxWidth().height(50.dp),
+                            colors = whiteButton(),
+                        ) { Text("✦  Sorprendimi", fontWeight = FontWeight.Bold) }
+                        SwitchRow("Nuova scena a ogni brano", s.autoSurprise) { v -> store.update { it.copy(autoSurprise = v) } }
                         SectionTitle("Scene pronte")
                         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             ScenePresets.forEach { p ->
@@ -141,13 +151,20 @@ fun SettingsSheet(store: SettingsStore, s: VisualSettings, onDismiss: () -> Unit
                                 }
                             }
                         }
-                        SectionTitle("Visualizzatore")
+                    }
+                    1 -> {
+                        SectionTitle("Centro")
                         ChipGroup(VisualizerStyle.entries, s.style, { it.label }) { v -> store.update { it.copy(style = v) } }
+                        SectionTitle("Livelli da mischiare")
+                        Text("Attivane quanti vuoi: si sovrappongono al centro.", fontSize = 12.sp, color = Color.White.copy(alpha = 0.6f))
+                        MultiChipGroup(Layer.entries, s.layers, { it.label }) { v ->
+                            store.update { it.copy(layers = if (v in it.layers) it.layers - v else it.layers + v) }
+                        }
                         SliderRow("Sensibilità", s.sensitivity, 0.4f..2.2f, { "x" + "%.1f".format(it) }) { v -> store.update { it.copy(sensitivity = v) } }
                         SwitchRow("Bagliore neon", s.glow) { v -> store.update { it.copy(glow = v) } }
                         SwitchRow("Copertina che ruota", s.spin) { v -> store.update { it.copy(spin = v) } }
                     }
-                    1 -> {
+                    2 -> {
                         SectionTitle("Colori del visualizzatore")
                         ChipGroup(ColorMode.entries, s.colorMode, { it.label }) { v -> store.update { it.copy(colorMode = v) } }
                         if (s.colorMode == ColorMode.CUSTOM) {
@@ -158,7 +175,7 @@ fun SettingsSheet(store: SettingsStore, s: VisualSettings, onDismiss: () -> Unit
                             }
                         }
                     }
-                    2 -> {
+                    3 -> {
                         SectionTitle("Sfondo")
                         ChipGroup(BackgroundMode.entries, s.background, { it.label }) { v ->
                             if (v == BackgroundMode.CUSTOM && s.customBgVersion == 0) pickBg.launch(imageOnly)
@@ -181,14 +198,14 @@ fun SettingsSheet(store: SettingsStore, s: VisualSettings, onDismiss: () -> Unit
                         SliderRow("Oscuramento", s.backgroundDim, 0f..0.9f, { pct(it) }) { v -> store.update { it.copy(backgroundDim = v) } }
                         SwitchRow("Zoom a ritmo dei bassi", s.backgroundPulse) { v -> store.update { it.copy(backgroundPulse = v) } }
                     }
-                    3 -> {
+                    4 -> {
                         Text(
                             "Il logo resta pulito al centro: attorno nasce una forma unica e morbida da cui escono le frequenze. Meglio un PNG con sfondo trasparente.",
                             fontSize = 13.sp,
                             color = Color.White.copy(alpha = 0.7f),
                         )
                         if (s.style != VisualizerStyle.LOGO) {
-                            Button(onClick = { store.update { it.copy(style = VisualizerStyle.LOGO) } }, colors = whiteButton()) { Text("Attiva lo stile Logo") }
+                            Button(onClick = { store.update { it.copy(style = VisualizerStyle.LOGO) } }, colors = whiteButton()) { Text("Metti il logo al centro") }
                         }
                         SectionTitle("Origine")
                         ChipGroup(LogoSource.entries, s.logoSource, { it.label }) { v ->
@@ -217,10 +234,13 @@ fun SettingsSheet(store: SettingsStore, s: VisualSettings, onDismiss: () -> Unit
                         SliderRow("Dimensione", s.logoScale, 0.25f..0.9f, { pct(it) }) { v -> store.update { it.copy(logoScale = v) } }
                         SwitchRow("Colora il logo con la palette", s.logoTinted) { v -> store.update { it.copy(logoTinted = v) } }
                     }
-                    4 -> {
+                    5 -> {
                         SwitchRow("Particelle", s.particles) { v -> store.update { it.copy(particles = v) } }
                         if (s.particles) {
-                            ChipGroup(ParticleStyle.entries, s.particleStyle, { it.label }) { v -> store.update { it.copy(particleStyle = v) } }
+                            Text("Puoi combinarne più di una.", fontSize = 12.sp, color = Color.White.copy(alpha = 0.6f))
+                            MultiChipGroup(ParticleStyle.entries, s.particleStyles, { it.label }) { v ->
+                                store.update { it.copy(particleStyles = if (v in it.particleStyles) it.particleStyles - v else it.particleStyles + v) }
+                            }
                             SliderRow("Quantità", s.particleDensity, 0.1f..1f, { pct(it) }) { v -> store.update { it.copy(particleDensity = v) } }
                         }
                         SwitchRow("Foschia colorata", s.fog) { v -> store.update { it.copy(fog = v) } }
@@ -229,9 +249,12 @@ fun SettingsSheet(store: SettingsStore, s: VisualSettings, onDismiss: () -> Unit
                         if (s.rays) SliderRow("Intensità raggi", s.raysIntensity, 0.1f..1f, { pct(it) }) { v -> store.update { it.copy(raysIntensity = v) } }
                         SwitchRow("Onde d'urto sul battito", s.shockwaves) { v -> store.update { it.copy(shockwaves = v) } }
                         SwitchRow("Flash sul battito", s.beatFlash) { v -> store.update { it.copy(beatFlash = v) } }
+                        SwitchRow("Camera a ritmo (zoom e oscillazione)", s.cameraMotion) { v -> store.update { it.copy(cameraMotion = v) } }
                         SwitchRow("Scossa sui bassi", s.bassShake) { v -> store.update { it.copy(bassShake = v) } }
+                        SwitchRow("Parallasse inclinando il telefono", s.parallax) { v -> store.update { it.copy(parallax = v) } }
+                        SwitchRow("Tocchi luminosi", s.touchFx) { v -> store.update { it.copy(touchFx = v) } }
                     }
-                    else -> {
+                    6 -> {
                         SectionTitle("Info del brano")
                         ChipGroup(InfoMode.entries, s.infoMode, { it.label }) { v -> store.update { it.copy(infoMode = v) } }
                         Text(
@@ -240,9 +263,50 @@ fun SettingsSheet(store: SettingsStore, s: VisualSettings, onDismiss: () -> Unit
                         )
                         SwitchRow("Pulsanti di controllo", s.showControls) { v -> store.update { it.copy(showControls = v) } }
                         SwitchRow("Scorri per cambiare brano", s.swipeToSkip) { v -> store.update { it.copy(swipeToSkip = v) } }
+                        SwitchRow("Orologio", s.clock) { v -> store.update { it.copy(clock = v) } }
                         TextButton(onClick = {
-                            store.update { VisualSettings(customBgVersion = it.customBgVersion, logoVersion = it.logoVersion, logoText = it.logoText) }
+                            store.update {
+                                VisualSettings(customBgVersion = it.customBgVersion, logoVersion = it.logoVersion, logoText = it.logoText)
+                            }
                         }) { Text("Ripristina impostazioni predefinite", color = Color.White.copy(alpha = 0.7f)) }
+                    }
+                    else -> {
+                        val on = s.emergency
+                        Button(
+                            onClick = { store.update { it.copy(emergency = !on) } },
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (on) Color(0xFF00E676) else Color(0xFFFF3D3D),
+                                contentColor = Color.Black,
+                            ),
+                        ) {
+                            Text(if (on) "Risparmio di emergenza ATTIVO · tocca per spegnere" else "⚡  Risparmio di emergenza", fontWeight = FontWeight.Bold)
+                        }
+                        Text(
+                            "Attiva tutto in un colpo: 30 fps, vetro leggero, niente effetti extra, schermo più scuro e spegnimento dopo 2 minuti di pausa. " +
+                                "Le tue impostazioni restano salvate e tornano appena lo spegni. Lo trovi anche nella foglia in alto a destra.",
+                            fontSize = 12.sp, color = Color.White.copy(alpha = 0.65f),
+                        )
+                        if (s.autoEcoBattery && lowBattery && !on) {
+                            Text("Batteria sotto il 20%: modalità eco attiva in automatico.", fontSize = 13.sp, color = Color(0xFF00E676))
+                        }
+                        SectionTitle("Fotogrammi al secondo")
+                        ChipGroup(FpsLimit.entries, s.fpsLimit, { it.label }) { v -> store.update { it.copy(fpsLimit = v) } }
+                        Text("A 60 fps la differenza si nota appena, ma la grafica consuma molto meno.", fontSize = 12.sp, color = Color.White.copy(alpha = 0.6f))
+                        SwitchRow("Rallenta quando la musica è in pausa o in silenzio", s.idleSlowdown) { v -> store.update { it.copy(idleSlowdown = v) } }
+                        SwitchRow("Lascia spegnere lo schermo in pausa", s.sleepWhenPaused) { v -> store.update { it.copy(sleepWhenPaused = v) } }
+                        if (s.sleepWhenPaused) {
+                            SliderRow("Dopo", s.sleepMinutes.toFloat(), 1f..30f, { "${it.roundToInt()} min" }, steps = 28) { v ->
+                                store.update { it.copy(sleepMinutes = v.roundToInt()) }
+                            }
+                        }
+                        SwitchRow("Vetro leggero (senza sfocatura)", s.lightGlass) { v -> store.update { it.copy(lightGlass = v) } }
+                        SwitchRow("Modalità eco (meno effetti, stesso stile)", s.ecoMode) { v -> store.update { it.copy(ecoMode = v) } }
+                        SwitchRow("Eco automatico con batteria sotto il 20%", s.autoEcoBattery) { v -> store.update { it.copy(autoEcoBattery = v) } }
+                        SwitchRow("Luminosità ridotta", s.dimScreen) { v -> store.update { it.copy(dimScreen = v) } }
+                        if (s.dimScreen) {
+                            SliderRow("Livello", s.dimLevel, 0.02f..0.6f, { pct(it) }) { v -> store.update { it.copy(dimLevel = v) } }
+                        }
                     }
                 }
             }
@@ -278,8 +342,35 @@ private fun <T> ChipGroup(options: List<T>, selected: T, label: (T) -> String, o
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SliderRow(label: String, value: Float, range: ClosedFloatingPointRange<Float>, format: (Float) -> String, onChange: (Float) -> Unit) {
+private fun <T> MultiChipGroup(options: List<T>, selected: Set<T>, label: (T) -> String, onToggle: (T) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.forEach { o ->
+            FilterChip(
+                selected = o in selected,
+                onClick = { onToggle(o) },
+                label = { Text(label(o)) },
+                colors = FilterChipDefaults.filterChipColors(
+                    containerColor = Color.White.copy(alpha = 0.06f),
+                    labelColor = Color.White,
+                    selectedContainerColor = Color.White,
+                    selectedLabelColor = Color.Black,
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SliderRow(
+    label: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    format: (Float) -> String,
+    steps: Int = 0,
+    onChange: (Float) -> Unit,
+) {
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(label, fontSize = 14.sp)
@@ -290,6 +381,7 @@ private fun SliderRow(label: String, value: Float, range: ClosedFloatingPointRan
             value = value,
             onValueChange = onChange,
             valueRange = range,
+            steps = steps,
             colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(alpha = 0.2f)),
         )
     }

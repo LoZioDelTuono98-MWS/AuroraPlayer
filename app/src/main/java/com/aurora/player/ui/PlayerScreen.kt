@@ -1,6 +1,16 @@
 package com.aurora.player.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.os.BatteryManager
+import android.os.SystemClock
+import android.view.WindowManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -43,6 +53,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Eco
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -52,6 +63,9 @@ import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.FloatState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.LongState
@@ -79,10 +93,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aurora.player.audio.AudioAnalyzer
 import com.aurora.player.logo.LogoAssets
@@ -90,11 +106,16 @@ import com.aurora.player.logo.LogoFactory
 import com.aurora.player.media.NowPlaying
 import com.aurora.player.media.TrackInfo
 import com.aurora.player.settings.BackgroundMode
+import com.aurora.player.settings.FpsLimit
+import com.aurora.player.settings.ecoActive
+import com.aurora.player.settings.effective
+import com.aurora.player.settings.surprise
 import com.aurora.player.settings.InfoMode
 import com.aurora.player.settings.SettingsStore
 import com.aurora.player.settings.VisualizerStyle
 import com.aurora.player.ui.glass.GlassIconButton
 import com.aurora.player.ui.glass.LiquidGlass
+import com.aurora.player.ui.glass.LocalLightGlass
 import com.aurora.player.ui.scene.ArtAssets
 import com.aurora.player.ui.scene.SceneColors
 import com.aurora.player.ui.scene.SceneInputs
@@ -107,14 +128,83 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-private fun VisualizerStyle.next() = VisualizerStyle.entries[(ordinal + 1) % VisualizerStyle.entries.size]
+private fun VisualizerStyle.next(): VisualizerStyle {
+    val list = VisualizerStyle.entries.filter { it != VisualizerStyle.NONE }
+    return list[(list.indexOf(this) + 1) % list.size]
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 
 @Composable
 fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Boolean, onRequestMic: () -> Unit) {
     val context = LocalContext.current
     val settings by store.settings.collectAsStateWithLifecycle()
     val track by NowPlaying.track.collectAsStateWithLifecycle()
+
+    // ---------- Energia ----------
+    val lowBattery by produceState(false) {
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        while (true) {
+            val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            value = level in 1..20 && !bm.isCharging
+            delay(60_000)
+        }
+    }
+    val eff = remember(settings, lowBattery) { settings.effective(lowBattery) }
+    val ecoOn = settings.ecoActive(lowBattery)
+
+    // Schermo acceso: sempre, a meno che non si sia scelto di lasciarlo spegnere in pausa
+    val view = LocalView.current
+    val keepOn by produceState(true, track.isPlaying, eff.sleepWhenPaused, eff.sleepMinutes) {
+        value = true
+        if (!track.isPlaying && eff.sleepWhenPaused) {
+            delay(eff.sleepMinutes * 60_000L)
+            value = false
+        }
+    }
+    DisposableEffect(keepOn) {
+        view.keepScreenOn = keepOn
+        onDispose { view.keepScreenOn = false }
+    }
+
+    // Luminosità ridotta e frequenza del display
+    LaunchedEffect(eff.dimScreen, eff.dimLevel, eff.fpsLimit) {
+        val window = context.findActivity()?.window ?: return@LaunchedEffect
+        val lp = window.attributes
+        lp.screenBrightness = if (eff.dimScreen) eff.dimLevel.coerceIn(0.01f, 1f) else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        lp.preferredRefreshRate = if (eff.fpsLimit == FpsLimit.MAX) 0f else 60f
+        window.attributes = lp
+    }
+
+    // Parallasse: sensore attivo solo se serve e solo con l'app in primo piano
+    val tilt = remember { FloatArray(2) }
+    LifecycleResumeEffect(eff.parallax) {
+        if (!eff.parallax) {
+            tilt[0] = 0f; tilt[1] = 0f
+            return@LifecycleResumeEffect onPauseOrDispose { }
+        }
+        val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        val sensor = sm.getDefaultSensor(Sensor.TYPE_GRAVITY) ?: sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        val listener = object : SensorEventListener {
+            override fun onSensorChanged(e: SensorEvent) {
+                val tx = (e.values[0] / 9.81f).coerceIn(-1f, 1f)
+                val ty = (e.values[1] / 9.81f - 0.5f).coerceIn(-1f, 1f)
+                tilt[0] += (tx - tilt[0]) * 0.12f
+                tilt[1] += (ty - tilt[1]) * 0.12f
+            }
+            override fun onAccuracyChanged(s: Sensor?, a: Int) {}
+        }
+        if (sensor != null) sm.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_GAME)
+        onPauseOrDispose { sm.unregisterListener(listener) }
+    }
 
     val art by produceState<ArtAssets?>(null, track.art, track.hasSession) {
         val bmp = track.art
@@ -136,7 +226,7 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
         }
     }
 
-    val target = paletteFor(settings.colorMode, art?.colors, settings.customColors)
+    val target = paletteFor(eff.colorMode, art?.colors, eff.customColors)
     val c1 by animateColorAsState(target.c1, tween(1200), label = "c1")
     val c2 by animateColorAsState(target.c2, tween(1200), label = "c2")
     val c3 by animateColorAsState(target.c3, tween(1200), label = "c3")
@@ -144,11 +234,25 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
 
     val frame = remember { mutableLongStateOf(0L) }
     val beatState = remember { mutableFloatStateOf(0f) }
+    val effState = rememberUpdatedState(eff)
+    val playingState = rememberUpdatedState(track.isPlaying)
     LaunchedEffect(Unit) {
+        var last = 0L
+        var loudAt = 0L
         while (true) {
-            withFrameNanos {
-                frame.longValue = it
-                beatState.floatValue = analyzer.beat
+            val s = effState.value
+            val now = SystemClock.uptimeMillis()
+            if (analyzer.bass + analyzer.mid + analyzer.treble > 0.03f) loudAt = now
+            val idle = s.idleSlowdown && (!playingState.value || now - loudAt > 3000)
+            val fps = if (idle) 10 else s.fpsLimit.fps
+            if (fps in 1..15) delay(1000L / fps - 12)
+            withFrameNanos { t ->
+                val interval = if (fps > 0) 1_000_000_000L / fps else 0L
+                if (t - last >= interval - 4_000_000L) {
+                    last = t
+                    frame.longValue = t
+                    beatState.floatValue = analyzer.beat
+                }
             }
         }
     }
@@ -171,17 +275,27 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
     var infoVisible by remember { mutableStateOf(true) }
     var infoPoke by remember { mutableIntStateOf(0) }
     val trackKey = track.title + "|" + track.artist
+    var firstTrack by remember { mutableStateOf(true) }
     LaunchedEffect(trackKey) {
         infoVisible = true
         infoPoke++
+        if (!firstTrack && settings.autoSurprise && track.hasSession) store.update { surprise(it) }
+        firstTrack = false
     }
-    LaunchedEffect(infoPoke, settings.infoMode) {
-        if (settings.infoMode == InfoMode.AUTO) {
+    var toast by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(toast) {
+        if (toast != null) {
+            delay(2200)
+            toast = null
+        }
+    }
+    LaunchedEffect(infoPoke, eff.infoMode) {
+        if (eff.infoMode == InfoMode.AUTO) {
             delay(6000)
             infoVisible = false
         }
     }
-    val showInfo = when (settings.infoMode) {
+    val showInfo = when (eff.infoMode) {
         InfoMode.ALWAYS -> true
         InfoMode.NEVER -> false
         InfoMode.AUTO -> infoVisible
@@ -206,13 +320,14 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
         }
     }
 
+    CompositionLocalProvider(LocalLightGlass provides eff.lightGlass) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         Canvas(
             Modifier
                 .fillMaxSize()
-                .hazeSource(hazeState)
-                .pointerInput(settings.swipeToSkip) {
-                    if (!settings.swipeToSkip) return@pointerInput
+                .then(if (eff.lightGlass) Modifier else Modifier.hazeSource(hazeState))
+                .pointerInput(eff.swipeToSkip) {
+                    if (!eff.swipeToSkip) return@pointerInput
                     var total = 0f
                     detectHorizontalDragGestures(
                         onDragStart = { total = 0f },
@@ -231,7 +346,10 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
                 }
                 .pointerInput(Unit) {
                     detectTapGestures(
-                        onTap = { if (controlsVisible) controlsVisible = false else poke() },
+                        onTap = { p ->
+                            if (effState.value.touchFx) renderer.touch(p)
+                            if (controlsVisible) controlsVisible = false else poke()
+                        },
                         onDoubleTap = {
                             store.update { it.copy(style = it.style.next()) }
                             poke()
@@ -245,14 +363,27 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
                 SceneInputs(
                     frameNanos = frame.longValue,
                     analyzer = analyzer,
-                    settings = settings,
+                    settings = eff,
                     colors = colors,
                     art = art,
                     customBg = customBg,
                     logo = logo,
                     playing = track.isPlaying,
+                    tiltX = tilt[0],
+                    tiltY = tilt[1],
+                    eco = ecoOn,
                 ),
             )
+        }
+
+        // ---- Orologio ----
+        if (eff.clock) {
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.displayCutout)
+                    .padding(top = 18.dp)
+            ) { ClockOverlay() }
         }
 
         // ---- Info brano (in alto a sinistra) ----
@@ -292,7 +423,43 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
             enter = fadeIn(),
             exit = fadeOut(),
         ) {
-            GlassIconButton(Icons.Rounded.Tune, "Impostazioni", hazeState, colors.c1, null, size = 42.dp) { showSettings = true }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                GlassIconButton(
+                    Icons.Rounded.Eco, "Risparmio di emergenza", hazeState,
+                    if (ecoOn) Color(0xFF00E676) else colors.c1, null, size = 42.dp,
+                ) {
+                    val on = !settings.emergency
+                    store.update { it.copy(emergency = on) }
+                    toast = if (on) "Risparmio di emergenza attivo" else "Risparmio di emergenza disattivato"
+                    poke()
+                }
+                GlassIconButton(Icons.Rounded.Tune, "Impostazioni", hazeState, colors.c1, null, size = 42.dp) { showSettings = true }
+            }
+        }
+
+        // ---- Indicatore eco sempre visibile (piccolo) ----
+        AnimatedVisibility(
+            visible = ecoOn && !controlsVisible,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .windowInsetsPadding(WindowInsets.displayCutout)
+                .padding(22.dp),
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            Icon(Icons.Rounded.Eco, null, tint = Color(0xFF00E676).copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
+        }
+
+        // ---- Messaggio temporaneo ----
+        AnimatedVisibility(
+            visible = toast != null,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 80.dp),
+            enter = fadeIn() + slideInVertically { -it },
+            exit = fadeOut(),
+        ) {
+            GlassChip(toast ?: "", hazeState, Color(0xFF00E676)) {}
         }
 
         // ---- Feedback swipe al centro ----
@@ -335,7 +502,7 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
                 )
             }
             AnimatedVisibility(
-                visible = settings.showControls,
+                visible = eff.showControls,
                 enter = fadeIn() + slideInVertically { it },
                 exit = fadeOut() + slideOutVertically { it },
             ) {
@@ -344,8 +511,10 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
         }
     }
 
+    }
+
     if (showSettings) {
-        SettingsSheet(store = store, s = settings, onDismiss = {
+        SettingsSheet(store = store, s = settings, lowBattery = lowBattery, onDismiss = {
             showSettings = false
             poke()
         })
@@ -482,5 +651,23 @@ private fun PressIcon(icon: ImageVector, desc: String, size: Dp, filled: Boolean
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, desc, tint = if (filled) Color.Black else Color.White, modifier = Modifier.size(size * if (filled) 0.55f else 0.62f))
+    }
+}
+
+@Composable
+private fun ClockOverlay() {
+    val now by produceState(System.currentTimeMillis()) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(60_000L - value % 60_000L)
+        }
+    }
+    val time = remember(now) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(now)) }
+    val date = remember(now) {
+        SimpleDateFormat("EEEE d MMMM", Locale.getDefault()).format(Date(now)).replaceFirstChar { it.uppercase() }
+    }
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(time, color = Color.White.copy(alpha = 0.92f), fontSize = 64.sp, fontWeight = FontWeight.Thin, letterSpacing = 2.sp)
+        Text(date, color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp, letterSpacing = 1.sp)
     }
 }

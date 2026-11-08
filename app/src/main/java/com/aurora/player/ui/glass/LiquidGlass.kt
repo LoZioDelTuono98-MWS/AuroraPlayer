@@ -15,6 +15,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.FloatState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.foundation.background
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,6 +35,9 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 
+/** true = vetro "finto" senza sfocatura in tempo reale (molto più leggero per la batteria). */
+val LocalLightGlass = staticCompositionLocalOf { false }
+
 /**
  * Pannello "liquid glass": sfocatura reale di ciò che c'è dietro (backdrop blur),
  * riflesso speculare in alto, bordo luminoso che si accende sul battito.
@@ -46,15 +51,19 @@ fun LiquidGlass(
     pulse: FloatState? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    val light = LocalLightGlass.current
     Box(
         modifier = modifier
             .clip(shape)
-            .hazeEffect(state = hazeState) {
-                blurRadius = 20.dp
-                backgroundColor = Color(0xFF0B0B12)
-                tints = listOf(HazeTint(Color.White.copy(alpha = 0.05f)))
-                noiseFactor = 0.07f
-            }
+            .then(
+                if (light) Modifier.background(Color(0xB0101018))
+                else Modifier.hazeEffect(state = hazeState) {
+                    blurRadius = 20.dp
+                    backgroundColor = Color(0xFF0B0B12)
+                    tints = listOf(HazeTint(Color.White.copy(alpha = 0.05f)))
+                    noiseFactor = 0.07f
+                }
+            )
             .drawWithContent {
                 val p = pulse?.floatValue ?: 0f
                 // velatura con riflesso di colore
