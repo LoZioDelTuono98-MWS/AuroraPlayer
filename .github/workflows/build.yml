@@ -24,10 +24,10 @@ jobs:
       - name: Compila
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleRelease --stacktrace
 
       - name: Rinomina APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk Aurora.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Aurora.apk
 
       - name: Pubblica come Release (download diretto da telefono)
         uses: softprops/action-gh-release@v2

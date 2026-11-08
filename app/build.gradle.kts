@@ -12,17 +12,29 @@ android {
         applicationId = "com.aurora.player"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
+    }
+
+    signingConfigs {
+        // Chiave fissa nel progetto: ogni nuova build si installa sopra la precedente.
+        create("aurora") {
+            storeFile = file("aurora.keystore")
+            storePassword = "aurora123"
+            keyAlias = "aurora"
+            keyPassword = "aurora123"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("aurora")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Firma di debug per poterla installare subito; sostituisci con la tua chiave per distribuirla.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("aurora")
         }
     }
     compileOptions {

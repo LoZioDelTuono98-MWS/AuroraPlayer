@@ -3,16 +3,27 @@ package com.aurora.player.ui
 import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,13 +31,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.MusicNote
@@ -60,11 +74,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -74,6 +90,7 @@ import com.aurora.player.logo.LogoFactory
 import com.aurora.player.media.NowPlaying
 import com.aurora.player.media.TrackInfo
 import com.aurora.player.settings.BackgroundMode
+import com.aurora.player.settings.InfoMode
 import com.aurora.player.settings.SettingsStore
 import com.aurora.player.settings.VisualizerStyle
 import com.aurora.player.ui.glass.GlassIconButton
@@ -112,14 +129,14 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
             withContext(Dispatchers.IO) { ImageFiles.decode(File(context.filesDir, ImageFiles.BG_FILE), 2048)?.asImageBitmap() }
         } else null
     }
-    val logo by produceState<LogoAssets?>(null, settings.logoSource, settings.logoText, settings.logoVersion) {
+    val logo by produceState<LogoAssets?>(null, settings.logoSource, settings.logoText, settings.logoVersion, settings.logoHalo) {
         delay(250) // evita ricalcoli mentre si digita
         value = withContext(Dispatchers.Default) {
-            runCatching { LogoFactory.build(context, settings.logoSource, settings.logoText) }.getOrNull()
+            runCatching { LogoFactory.build(context, settings.logoSource, settings.logoText, settings.logoHalo) }.getOrNull()
         }
     }
 
-    val target = paletteFor(settings.colorMode, art?.colors)
+    val target = paletteFor(settings.colorMode, art?.colors, settings.customColors)
     val c1 by animateColorAsState(target.c1, tween(1200), label = "c1")
     val c2 by animateColorAsState(target.c2, tween(1200), label = "c2")
     val c3 by animateColorAsState(target.c3, tween(1200), label = "c3")
@@ -139,6 +156,7 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
     val renderer = remember { SceneRenderer() }
     val hazeState = remember { HazeState() }
 
+    // Comandi secondari (ingranaggio e suggerimenti): compaiono al tocco
     var controlsVisible by remember { mutableStateOf(true) }
     var interaction by remember { mutableIntStateOf(0) }
     var showSettings by remember { mutableStateOf(false) }
@@ -148,9 +166,44 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
             controlsVisible = false
         }
     }
+
+    // Info brano: entra al cambio canzone o al tocco, poi esce da sola
+    var infoVisible by remember { mutableStateOf(true) }
+    var infoPoke by remember { mutableIntStateOf(0) }
+    val trackKey = track.title + "|" + track.artist
+    LaunchedEffect(trackKey) {
+        infoVisible = true
+        infoPoke++
+    }
+    LaunchedEffect(infoPoke, settings.infoMode) {
+        if (settings.infoMode == InfoMode.AUTO) {
+            delay(6000)
+            infoVisible = false
+        }
+    }
+    val showInfo = when (settings.infoMode) {
+        InfoMode.ALWAYS -> true
+        InfoMode.NEVER -> false
+        InfoMode.AUTO -> infoVisible
+    }
+
     fun poke() {
         controlsVisible = true
         interaction++
+        infoVisible = true
+        infoPoke++
+    }
+
+    // Feedback dello swipe
+    var skipIcon by remember { mutableStateOf(Icons.Rounded.SkipNext) }
+    var skipVisible by remember { mutableStateOf(false) }
+    var skipCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(skipCount) {
+        if (skipCount > 0) {
+            skipVisible = true
+            delay(650)
+            skipVisible = false
+        }
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -158,6 +211,24 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
             Modifier
                 .fillMaxSize()
                 .hazeSource(hazeState)
+                .pointerInput(settings.swipeToSkip) {
+                    if (!settings.swipeToSkip) return@pointerInput
+                    var total = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { total = 0f },
+                        onDragEnd = {
+                            val th = 80.dp.toPx()
+                            if (total < -th) {
+                                NowPlaying.next(); skipIcon = Icons.Rounded.SkipNext; skipCount++
+                            } else if (total > th) {
+                                NowPlaying.previous(); skipIcon = Icons.Rounded.SkipPrevious; skipCount++
+                            }
+                        },
+                    ) { change, amount ->
+                        total += amount
+                        change.consume()
+                    }
+                }
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onTap = { if (controlsVisible) controlsVisible = false else poke() },
@@ -184,38 +255,34 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
             )
         }
 
-        if (settings.showInfoPanel) {
-            Column(
-                Modifier
-                    .align(Alignment.TopStart)
-                    .windowInsetsPadding(WindowInsets.displayCutout)
-                    .padding(16.dp)
-            ) {
-                NowPlayingCard(
-                    track = track,
-                    art = art?.image,
-                    hazeState = hazeState,
-                    accent = colors.c1,
-                    pulse = beatState,
-                    frame = frame,
-                    onOpen = {
-                        NowPlaying.launchIntentForSource()?.let {
-                            runCatching { context.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                        }
-                    },
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    GlassIconButton(Icons.Rounded.SkipPrevious, "Precedente", hazeState, colors.c1, beatState) { NowPlaying.previous() }
-                    GlassIconButton(
-                        if (track.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                        "Play o pausa", hazeState, colors.c1, beatState, size = 54.dp,
-                    ) { NowPlaying.playPause() }
-                    GlassIconButton(Icons.Rounded.SkipNext, "Successivo", hazeState, colors.c1, beatState) { NowPlaying.next() }
-                }
-            }
+        // ---- Info brano (in alto a sinistra) ----
+        AnimatedVisibility(
+            visible = showInfo,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .windowInsetsPadding(WindowInsets.displayCutout)
+                .padding(16.dp),
+            enter = slideInHorizontally(tween(550, easing = FastOutSlowInEasing)) { -it - 60 } +
+                fadeIn(tween(450)) + scaleIn(tween(550), initialScale = 0.85f),
+            exit = slideOutHorizontally(tween(450, easing = FastOutSlowInEasing)) { -it - 60 } + fadeOut(tween(350)),
+        ) {
+            InfoPill(
+                track = track,
+                art = art?.image,
+                hazeState = hazeState,
+                accent = colors.c1,
+                pulse = beatState,
+                analyzer = analyzer,
+                frame = frame,
+                onOpen = {
+                    NowPlaying.launchIntentForSource()?.let {
+                        runCatching { context.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                    }
+                },
+            )
         }
 
+        // ---- Ingranaggio impostazioni ----
         AnimatedVisibility(
             visible = controlsVisible,
             modifier = Modifier
@@ -225,33 +292,54 @@ fun PlayerScreen(store: SettingsStore, analyzer: AudioAnalyzer, micGranted: Bool
             enter = fadeIn(),
             exit = fadeOut(),
         ) {
-            GlassIconButton(Icons.Rounded.Tune, "Impostazioni", hazeState, colors.c1, null) { showSettings = true }
+            GlassIconButton(Icons.Rounded.Tune, "Impostazioni", hazeState, colors.c1, null, size = 42.dp) { showSettings = true }
         }
 
+        // ---- Feedback swipe al centro ----
         AnimatedVisibility(
-            visible = controlsVisible || !micGranted,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 22.dp),
-            enter = fadeIn(),
-            exit = fadeOut(),
+            visible = skipVisible,
+            modifier = Modifier.align(Alignment.Center),
+            enter = scaleIn(initialScale = 0.6f) + fadeIn(),
+            exit = scaleOut(targetScale = 1.3f) + fadeOut(),
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                val status = analyzer.status
-                if (!micGranted) {
-                    GlassChip("Tocca qui per attivare l'audio reattivo", hazeState, colors.c1, onRequestMic)
-                    Spacer(Modifier.height(10.dp))
-                } else if (status != null) {
-                    GlassChip(status, hazeState, colors.c1) {}
-                    Spacer(Modifier.height(10.dp))
+            LiquidGlass(hazeState, Modifier.size(76.dp), CircleShape, colors.c1, beatState) {
+                Icon(skipIcon, null, tint = Color.White, modifier = Modifier.align(Alignment.Center).size(36.dp))
+            }
+        }
+
+        // ---- In basso al centro: avvisi + controlli ----
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 26.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            val status = analyzer.status
+            AnimatedVisibility(visible = !micGranted || (status != null && controlsVisible), enter = fadeIn(), exit = fadeOut()) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (!micGranted) GlassChip("Tocca qui per attivare l'audio reattivo", hazeState, colors.c1, onRequestMic)
+                    else if (status != null) GlassChip(status, hazeState, colors.c1) {}
+                    Spacer(Modifier.height(12.dp))
                 }
-                if (controlsVisible) {
-                    Text(
-                        "Doppio tocco: cambia stile  •  Tieni premuto: impostazioni",
-                        color = Color.White.copy(alpha = 0.55f),
-                        fontSize = 11.sp,
-                    )
-                }
+            }
+            AnimatedVisibility(
+                visible = controlsVisible,
+                enter = fadeIn() + slideInVertically { it / 2 },
+                exit = fadeOut() + slideOutVertically { it / 2 },
+            ) {
+                Text(
+                    "Doppio tocco: stile  •  Scorri: brano  •  Tieni premuto: impostazioni",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 12.dp),
+                )
+            }
+            AnimatedVisibility(
+                visible = settings.showControls,
+                enter = fadeIn() + slideInVertically { it },
+                exit = fadeOut() + slideOutVertically { it },
+            ) {
+                ControlsBar(track, hazeState, colors.c1, beatState, frame)
             }
         }
     }
@@ -270,97 +358,129 @@ private fun GlassChip(text: String, hazeState: HazeState, accent: Color, onClick
         Text(
             text,
             color = Color.White,
-            fontSize = 13.sp,
+            fontSize = 12.sp,
             modifier = Modifier
                 .clickable(onClick = onClick)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 9.dp),
         )
     }
 }
 
+/** Pillola minimale: copertina tonda, titolo, artista e un mini equalizzatore vivo. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun NowPlayingCard(
+private fun InfoPill(
     track: TrackInfo,
     art: ImageBitmap?,
     hazeState: HazeState,
     accent: Color,
     pulse: FloatState,
+    analyzer: AudioAnalyzer,
     frame: LongState,
     onOpen: () -> Unit,
 ) {
-    LiquidGlass(hazeState, Modifier.width(300.dp), RoundedCornerShape(28.dp), accent, pulse) {
-        Column(Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(58.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color.White.copy(alpha = 0.08f))
-                        .clickable(onClick = onOpen),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (art != null) {
-                        Image(art, contentDescription = "Copertina", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                    } else {
-                        Icon(Icons.Rounded.MusicNote, null, tint = Color.White.copy(alpha = 0.7f))
-                    }
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    val title = track.title.ifEmpty { if (track.hasSession) "Brano sconosciuto" else "Nessuna riproduzione" }
-                    val subtitle = listOf(track.artist, track.album).filter { it.isNotEmpty() }.joinToString("  •  ")
-                        .ifEmpty { if (!track.hasSession) "Avvia Spotify, SimpMusic o un altro player" else "" }
-                    Text(title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.basicMarquee())
-                    if (subtitle.isNotEmpty()) {
-                        Text(subtitle, color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp, maxLines = 1, modifier = Modifier.basicMarquee())
-                    }
-                    if (track.sourceApp.isNotEmpty()) {
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            track.sourceApp.uppercase(),
-                            color = lerp(accent, Color.White, 0.3f),
-                            fontSize = 10.sp,
-                            letterSpacing = 1.4.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                        )
-                    }
+    LiquidGlass(hazeState, Modifier.widthIn(max = 250.dp).height(46.dp), RoundedCornerShape(50), accent, pulse) {
+        Row(
+            Modifier
+                .fillMaxHeight()
+                .clickable(onClick = onOpen)
+                .padding(start = 5.dp, end = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.1f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (art != null) {
+                    Image(art, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                } else {
+                    Icon(Icons.Rounded.MusicNote, null, tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
                 }
             }
-            if (track.durationMs > 0) {
-                Spacer(Modifier.height(12.dp))
-                ProgressLine(track, accent, frame)
-                val pos by produceState(track.currentPosition(), track) {
-                    while (true) {
-                        value = track.currentPosition()
-                        delay(500)
-                    }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f, fill = false)) {
+                val title = track.title.ifEmpty { if (track.hasSession) "Brano sconosciuto" else "Nessuna riproduzione" }
+                val subtitle = track.artist.ifEmpty { if (!track.hasSession) "Avvia la musica" else "" }
+                Text(title, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.basicMarquee())
+                if (subtitle.isNotEmpty()) {
+                    Text(subtitle, color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp, maxLines = 1, modifier = Modifier.basicMarquee())
                 }
-                Spacer(Modifier.height(4.dp))
-                Row(Modifier.fillMaxWidth()) {
-                    Text(formatTime(pos), color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
-                    Spacer(Modifier.weight(1f))
-                    Text(formatTime(track.durationMs), color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
-                }
+            }
+            Spacer(Modifier.width(10.dp))
+            MiniEq(analyzer, frame, track.isPlaying)
+        }
+    }
+}
+
+@Composable
+private fun MiniEq(analyzer: AudioAnalyzer, frame: LongState, playing: Boolean) {
+    Canvas(Modifier.size(width = 13.dp, height = 14.dp)) {
+        frame.longValue
+        val bw = size.width / 5f
+        val idx = intArrayOf(3, 16, 34)
+        for (k in 0..2) {
+            val v = if (playing) analyzer.bands[idx[k]] else 0f
+            val hh = size.height * (0.18f + 0.82f * v.coerceIn(0f, 1f))
+            drawRoundRect(
+                Color.White.copy(alpha = 0.85f),
+                topLeft = Offset(k * 2f * bw, size.height - hh),
+                size = Size(bw, hh),
+                cornerRadius = CornerRadius(bw / 2f),
+            )
+        }
+    }
+}
+
+/** Capsula di vetro centrata in basso: indietro, play/pausa, avanti, con un filo di avanzamento. */
+@Composable
+private fun ControlsBar(track: TrackInfo, hazeState: HazeState, accent: Color, pulse: FloatState, frame: LongState) {
+    LiquidGlass(hazeState, Modifier.height(56.dp), RoundedCornerShape(50), accent, pulse) {
+        Row(
+            Modifier
+                .fillMaxHeight()
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            PressIcon(Icons.Rounded.SkipPrevious, "Precedente", 44.dp, filled = false) { NowPlaying.previous() }
+            PressIcon(if (track.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "Play o pausa", 42.dp, filled = true) { NowPlaying.playPause() }
+            PressIcon(Icons.Rounded.SkipNext, "Successivo", 44.dp, filled = false) { NowPlaying.next() }
+        }
+        if (track.durationMs > 0) {
+            Canvas(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 26.dp, vertical = 5.dp)
+                    .width(110.dp)
+                    .height(2.dp)
+            ) {
+                frame.longValue
+                val p = (track.currentPosition().toFloat() / track.durationMs).coerceIn(0f, 1f)
+                val r = CornerRadius(size.height / 2f)
+                drawRoundRect(Color.White.copy(alpha = 0.15f), cornerRadius = r)
+                drawRoundRect(Brush.horizontalGradient(listOf(accent, Color.White)), size = Size(size.width * p, size.height), cornerRadius = r)
             }
         }
     }
 }
 
 @Composable
-private fun ProgressLine(track: TrackInfo, accent: Color, frame: LongState) {
-    Canvas(Modifier.fillMaxWidth().height(4.dp)) {
-        frame.longValue // ridisegna a ogni fotogramma
-        val p = (track.currentPosition().toFloat() / track.durationMs).coerceIn(0f, 1f)
-        val r = CornerRadius(size.height / 2f)
-        drawRoundRect(Color.White.copy(alpha = 0.18f), cornerRadius = r)
-        drawRoundRect(Brush.horizontalGradient(listOf(accent, Color.White)), size = Size(size.width * p, size.height), cornerRadius = r)
-        drawCircle(Color.White, size.height * 1.1f, Offset(size.width * p, size.height / 2f))
+private fun PressIcon(icon: ImageVector, desc: String, size: Dp, filled: Boolean, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.85f else 1f, label = "press")
+    Box(
+        Modifier
+            .size(size)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(CircleShape)
+            .background(if (filled) Color.White else Color.Transparent)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, desc, tint = if (filled) Color.Black else Color.White, modifier = Modifier.size(size * if (filled) 0.55f else 0.62f))
     }
-}
-
-private fun formatTime(ms: Long): String {
-    val total = (ms / 1000).coerceAtLeast(0)
-    return "%d:%02d".format(total / 60, total % 60)
 }

@@ -1,39 +1,43 @@
 package com.aurora.player.logo
 
 import android.graphics.Bitmap
+import com.aurora.player.settings.LogoHalo
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 
-/** Un contorno chiuso, campionato a passo costante, con le normali rivolte verso l'esterno. */
+/** Contorno chiuso, campionato a passo costante, con normali verso l'esterno (coordinate normalizzate). */
 class Contour(
     val xs: FloatArray,
     val ys: FloatArray,
     val nx: FloatArray,
     val ny: FloatArray,
-    /** Distanza media tra due punti, in unità normalizzate. */
     val spacing: Float,
 ) {
     val size: Int get() = xs.size
 }
 
 /**
- * Forma di un logo: coordinate normalizzate centrate in (0,0), dove 1.0 = lato più lungo dell'immagine.
- * normW/normH = dimensioni dell'immagine nella stessa scala.
+ * Coordinate normalizzate centrate in (0,0); 1.0 = lato più lungo del logo.
+ * [envelope] è UNA sola forma morbida che avvolge tutto il logo (lettere comprese).
  */
-class LogoShape(val contours: List<Contour>, val normW: Float, val normH: Float)
+class LogoShape(val envelope: Contour, val normW: Float, val normH: Float)
 
 /**
- * Trova il perimetro di qualsiasi logo (PNG con trasparenza, o testo) così che
- * le onde di frequenza possano "uscire" esattamente dai suoi bordi.
- * Pipeline: maschera alfa -> componenti connesse -> tracciamento Moore -> levigatura -> ricampionamento -> normali.
+ * Calcola l'"involucro" del logo: unisce tutte le parti (lettere, dettagli, buchi)
+ * in una sola sagoma liscia a distanza costante dal logo. Le frequenze partono da lì,
+ * così il logo resta un blocco pulito al centro e l'effetto lo circonda in modo uniforme.
  */
 object LogoContourExtractor {
     private val DX = intArrayOf(-1, -1, 0, 1, 1, 1, 0, -1)
     private val DY = intArrayOf(0, -1, -1, -1, 0, 1, 1, 1)
 
-    fun extract(src: Bitmap, targetPoints: Int = 420): LogoShape? {
-        val maxDim = 220
+    fun extract(src: Bitmap, halo: LogoHalo, points: Int = 240): LogoShape? {
+        val maxDim = 200
         val scale = maxDim.toFloat() / max(src.width, src.height)
         val sw = max(1, (src.width * scale).roundToInt())
         val sh = max(1, (src.height * scale).roundToInt())
@@ -42,83 +46,164 @@ object LogoContourExtractor {
         val px = IntArray(sw * sh)
         small.getPixels(px, 0, sw, 0, 0, sw, sh)
 
-        val pad = 4
+        val pad = 64
         val w = sw + pad * 2
         val h = sh + pad * 2
-        val raw = BooleanArray(w * h)
+        val mask = BooleanArray(w * h)
+        var any = false
         for (y in 0 until sh) for (x in 0 until sw) {
-            raw[(y + pad) * w + x + pad] = (px[y * sw + x] ushr 24) >= 110
+            if ((px[y * sw + x] ushr 24) >= 100) {
+                mask[(y + pad) * w + x + pad] = true
+                any = true
+            }
         }
-        val mask = dilate(raw, w, h)
+        if (!any) return null
+        val s = max(sw, sh).toFloat()
+        val cxPix = pad + sw / 2f
+        val cyPix = pad + sh / 2f
 
-        // Componenti connesse (4-vicinato)
+        if (halo == LogoHalo.CIRCLE) return circleShape(mask, w, h, cxPix, cyPix, s, sw, sh, points)
+
+        val dist = distanceTransform(mask, w, h)
+        var haloPx = max(3, (halo.factor * maxDim).roundToInt())
+        var env = BooleanArray(0)
+        var labels = IntArray(0)
+        var best = -1
+        var bestStart = 0
+        var bestCount = 0
+        for (attempt in 0 until 4) {
+            env = fillHoles(BooleanArray(w * h) { dist[it] <= haloPx * 3 }, w, h)
+            val res = largestComponent(env, w, h)
+            labels = res.labels
+            best = res.label
+            bestStart = res.start
+            bestCount = res.count
+            if (res.components <= 1 || haloPx > pad - 6) break
+            haloPx = min(pad - 6, (haloPx * 1.7f).roundToInt()) // unisci le parti lontane
+        }
+        if (best < 0) return null
+
+        val pts = trace(labels, w, h, best, bestStart, bestCount)
+        if (pts.size < 16) return null
+        val xs = FloatArray(pts.size) { (pts[it] % w).toFloat() + 0.5f }
+        val ys = FloatArray(pts.size) { (pts[it] / w).toFloat() + 0.5f }
+        repeat(6) { smooth(xs, 3); smooth(ys, 3) }
+        val len = perimeter(xs, ys)
+        val (rx, ry) = resample(xs, ys, points)
+        repeat(2) { smooth(rx, 2); smooth(ry, 2) }
+        val (nx, ny) = normals(rx, ry, 3)
+        orientOutward(rx, ry, nx, ny, env, w, h)
+        for (i in 0 until points) {
+            rx[i] = (rx[i] - cxPix) / s
+            ry[i] = (ry[i] - cyPix) / s
+        }
+        return LogoShape(Contour(rx, ry, nx, ny, len / points / s), sw / s, sh / s)
+    }
+
+    private fun circleShape(mask: BooleanArray, w: Int, h: Int, cx: Float, cy: Float, s: Float, sw: Int, sh: Int, n: Int): LogoShape {
+        var maxR = 0f
+        for (y in 0 until h) for (x in 0 until w) {
+            if (!mask[y * w + x]) continue
+            val dx = x + 0.5f - cx
+            val dy = y + 0.5f - cy
+            val r = sqrt(dx * dx + dy * dy)
+            if (r > maxR) maxR = r
+        }
+        val r = (maxR + s * 0.05f) / s
+        val xs = FloatArray(n)
+        val ys = FloatArray(n)
+        val nx = FloatArray(n)
+        val ny = FloatArray(n)
+        for (i in 0 until n) {
+            val a = -PI.toFloat() / 2f + i * 2f * PI.toFloat() / n
+            nx[i] = cos(a); ny[i] = sin(a)
+            xs[i] = nx[i] * r; ys[i] = ny[i] * r
+        }
+        return LogoShape(Contour(xs, ys, nx, ny, 2f * PI.toFloat() * r / n), sw / s, sh / s)
+    }
+
+    /** Distanza (chamfer 3-4) dal pixel pieno più vicino. */
+    private fun distanceTransform(mask: BooleanArray, w: Int, h: Int): IntArray {
+        val inf = 1_000_000
+        val d = IntArray(w * h) { if (mask[it]) 0 else inf }
+        for (y in 0 until h) for (x in 0 until w) {
+            val i = y * w + x
+            if (d[i] == 0) continue
+            var m = d[i]
+            if (x > 0) m = min(m, d[i - 1] + 3)
+            if (y > 0) {
+                m = min(m, d[i - w] + 3)
+                if (x > 0) m = min(m, d[i - w - 1] + 4)
+                if (x < w - 1) m = min(m, d[i - w + 1] + 4)
+            }
+            d[i] = m
+        }
+        for (y in h - 1 downTo 0) for (x in w - 1 downTo 0) {
+            val i = y * w + x
+            if (d[i] == 0) continue
+            var m = d[i]
+            if (x < w - 1) m = min(m, d[i + 1] + 3)
+            if (y < h - 1) {
+                m = min(m, d[i + w] + 3)
+                if (x < w - 1) m = min(m, d[i + w + 1] + 4)
+                if (x > 0) m = min(m, d[i + w - 1] + 4)
+            }
+            d[i] = m
+        }
+        return d
+    }
+
+    /** Riempie i buchi interni (es. dentro una "O"): resta solo la sagoma esterna. */
+    private fun fillHoles(m: BooleanArray, w: Int, h: Int): BooleanArray {
+        val outside = BooleanArray(w * h)
+        val q = IntArray(w * h)
+        var head = 0
+        var tail = 0
+        fun push(i: Int) {
+            if (!m[i] && !outside[i]) { outside[i] = true; q[tail++] = i }
+        }
+        for (x in 0 until w) { push(x); push((h - 1) * w + x) }
+        for (y in 0 until h) { push(y * w); push(y * w + w - 1) }
+        while (head < tail) {
+            val p = q[head++]
+            val x = p % w
+            val y = p / w
+            if (x > 0) push(p - 1)
+            if (x < w - 1) push(p + 1)
+            if (y > 0) push(p - w)
+            if (y < h - 1) push(p + w)
+        }
+        return BooleanArray(w * h) { !outside[it] }
+    }
+
+    private class Components(val labels: IntArray, val label: Int, val start: Int, val count: Int, val components: Int)
+
+    private fun largestComponent(m: BooleanArray, w: Int, h: Int): Components {
         val labels = IntArray(w * h)
-        val queue = IntArray(w * h)
-        data class Comp(val label: Int, val start: Int, val count: Int)
-        val comps = ArrayList<Comp>()
+        val q = IntArray(w * h)
         var label = 0
-        var totalOn = 0
+        var best = -1
+        var bestStart = 0
+        var bestCount = 0
         for (i in 0 until w * h) {
-            if (!mask[i] || labels[i] != 0) continue
+            if (!m[i] || labels[i] != 0) continue
             label++
             var head = 0
             var tail = 0
-            queue[tail++] = i
+            q[tail++] = i
             labels[i] = label
             while (head < tail) {
-                val p = queue[head++]
+                val p = q[head++]
                 val x = p % w
                 val y = p / w
-                if (x > 0 && mask[p - 1] && labels[p - 1] == 0) { labels[p - 1] = label; queue[tail++] = p - 1 }
-                if (x < w - 1 && mask[p + 1] && labels[p + 1] == 0) { labels[p + 1] = label; queue[tail++] = p + 1 }
-                if (y > 0 && mask[p - w] && labels[p - w] == 0) { labels[p - w] = label; queue[tail++] = p - w }
-                if (y < h - 1 && mask[p + w] && labels[p + w] == 0) { labels[p + w] = label; queue[tail++] = p + w }
+                if (x > 0 && m[p - 1] && labels[p - 1] == 0) { labels[p - 1] = label; q[tail++] = p - 1 }
+                if (x < w - 1 && m[p + 1] && labels[p + 1] == 0) { labels[p + 1] = label; q[tail++] = p + 1 }
+                if (y > 0 && m[p - w] && labels[p - w] == 0) { labels[p - w] = label; q[tail++] = p - w }
+                if (y < h - 1 && m[p + w] && labels[p + w] == 0) { labels[p + w] = label; q[tail++] = p + w }
             }
-            comps.add(Comp(label, i, tail))
-            totalOn += tail
+            if (tail > bestCount) { bestCount = tail; best = label; bestStart = i }
         }
-        if (totalOn == 0) return null
-        val minCount = max(25, (totalOn * 0.004f).toInt())
-
-        // Traccia i bordi esterni
-        val rawContours = ArrayList<Pair<FloatArray, FloatArray>>()
-        for (c in comps) {
-            if (c.count < minCount) continue
-            val pts = trace(labels, w, h, c.label, c.start, c.count)
-            if (pts.size < 12) continue
-            val xs = FloatArray(pts.size) { (pts[it] % w).toFloat() + 0.5f }
-            val ys = FloatArray(pts.size) { (pts[it] / w).toFloat() + 0.5f }
-            smooth(xs); smooth(xs)
-            smooth(ys); smooth(ys)
-            rawContours.add(xs to ys)
-        }
-        if (rawContours.isEmpty()) return null
-
-        val lengths = rawContours.map { perimeter(it.first, it.second) }
-        val totalLen = lengths.sum()
-        val s = max(sw, sh).toFloat()
-        val contours = ArrayList<Contour>()
-        for ((idx, rc) in rawContours.withIndex()) {
-            val m = max(24, (targetPoints * lengths[idx] / totalLen).roundToInt())
-            val (rx, ry) = resample(rc.first, rc.second, m)
-            val (nx, ny) = normals(rx, ry)
-            orientOutward(rx, ry, nx, ny, mask, w, h)
-            for (i in 0 until m) {
-                rx[i] = (rx[i] - pad - sw / 2f) / s
-                ry[i] = (ry[i] - pad - sh / 2f) / s
-            }
-            contours.add(Contour(rx, ry, nx, ny, lengths[idx] / m / s))
-        }
-        return LogoShape(contours, sw / s, sh / s)
-    }
-
-    private fun dilate(m: BooleanArray, w: Int, h: Int): BooleanArray {
-        val out = BooleanArray(w * h)
-        for (y in 1 until h - 1) for (x in 1 until w - 1) {
-            val i = y * w + x
-            out[i] = m[i] || m[i - 1] || m[i + 1] || m[i - w] || m[i + w]
-        }
-        return out
+        return Components(labels, best, bestStart, bestCount, label)
     }
 
     private fun trace(labels: IntArray, w: Int, h: Int, label: Int, start: Int, count: Int): IntArray {
@@ -128,7 +213,7 @@ object LogoContourExtractor {
         val sy = start / w
         var cx = sx
         var cy = sy
-        var back = 0 // il pixel a ovest del primo è sicuramente vuoto
+        var back = 0
         pts.add(start)
         val maxPts = count * 4 + 16
         while (pts.size < maxPts) {
@@ -142,14 +227,11 @@ object LogoContourExtractor {
             val nyp = cy + DY[found]
             if (cx == sx && cy == sy && pts.size > 1 && nyp * w + nxp == pts[1]) break
             val prev = (found + 7) % 8
-            val bx = cx + DX[prev] - nxp
-            val by = cy + DY[prev] - nyp
-            back = dirIndex(bx, by)
+            back = dirIndex(cx + DX[prev] - nxp, cy + DY[prev] - nyp)
             cx = nxp
             cy = nyp
             pts.add(cy * w + cx)
         }
-        // l'ultimo punto coincide col primo: rimuovilo
         if (pts.size > 2 && pts.last() == start) pts.removeAt(pts.size - 1)
         return pts.toIntArray()
     }
@@ -159,13 +241,13 @@ object LogoContourExtractor {
         return 0
     }
 
-    private fun smooth(a: FloatArray) {
+    private fun smooth(a: FloatArray, r: Int) {
         val n = a.size
         val src = a.copyOf()
         for (i in 0 until n) {
             var sum = 0f
-            for (k in -2..2) sum += src[(i + k + n) % n]
-            a[i] = sum / 5f
+            for (k in -r..r) sum += src[((i + k) % n + n) % n]
+            a[i] = sum / (2 * r + 1)
         }
     }
 
@@ -205,13 +287,13 @@ object LogoContourExtractor {
         return ox to oy
     }
 
-    private fun normals(xs: FloatArray, ys: FloatArray): Pair<FloatArray, FloatArray> {
+    private fun normals(xs: FloatArray, ys: FloatArray, span: Int): Pair<FloatArray, FloatArray> {
         val n = xs.size
         val nx = FloatArray(n)
         val ny = FloatArray(n)
         for (i in 0 until n) {
-            val a = (i - 1 + n) % n
-            val b = (i + 1) % n
+            val a = ((i - span) % n + n) % n
+            val b = (i + span) % n
             val tx = xs[b] - xs[a]
             val ty = ys[b] - ys[a]
             val len = sqrt(tx * tx + ty * ty).coerceAtLeast(1e-5f)
@@ -224,8 +306,8 @@ object LogoContourExtractor {
     private fun orientOutward(xs: FloatArray, ys: FloatArray, nx: FloatArray, ny: FloatArray, mask: BooleanArray, w: Int, h: Int) {
         var insideVotes = 0
         for (i in xs.indices) {
-            val x = (xs[i] + nx[i] * 2.5f).toInt()
-            val y = (ys[i] + ny[i] * 2.5f).toInt()
+            val x = (xs[i] + nx[i] * 3f).toInt()
+            val y = (ys[i] + ny[i] * 3f).toInt()
             if (x in 0 until w && y in 0 until h && mask[y * w + x]) insideVotes++
         }
         if (insideVotes > xs.size / 2) {

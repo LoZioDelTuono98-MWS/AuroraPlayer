@@ -50,9 +50,9 @@ fun LiquidGlass(
         modifier = modifier
             .clip(shape)
             .hazeEffect(state = hazeState) {
-                blurRadius = 24.dp
+                blurRadius = 20.dp
                 backgroundColor = Color(0xFF0B0B12)
-                tints = listOf(HazeTint(Color.White.copy(alpha = 0.07f)))
+                tints = listOf(HazeTint(Color.White.copy(alpha = 0.05f)))
                 noiseFactor = 0.07f
             }
             .drawWithContent {
@@ -60,7 +60,7 @@ fun LiquidGlass(
                 // velatura con riflesso di colore
                 drawRect(
                     Brush.linearGradient(
-                        listOf(Color.White.copy(alpha = 0.10f), Color.Transparent, accent.copy(alpha = 0.10f + 0.18f * p)),
+                        listOf(Color.White.copy(alpha = 0.07f), Color.Transparent, accent.copy(alpha = 0.06f + 0.14f * p)),
                         start = Offset.Zero,
                         end = Offset(size.width, size.height),
                     )
@@ -68,8 +68,8 @@ fun LiquidGlass(
                 // lucentezza superiore
                 drawRect(
                     Brush.verticalGradient(
-                        0f to Color.White.copy(alpha = 0.16f),
-                        0.45f to Color.White.copy(alpha = 0.02f),
+                        0f to Color.White.copy(alpha = 0.12f),
+                        0.5f to Color.White.copy(alpha = 0.015f),
                         1f to Color.Transparent,
                     )
                 )
@@ -77,7 +77,7 @@ fun LiquidGlass(
                 val hl = Offset(size.width * 0.18f, 0f)
                 val rr = size.minDimension * 1.1f
                 drawCircle(
-                    Brush.radialGradient(listOf(Color.White.copy(alpha = 0.18f), Color.Transparent), center = hl, radius = rr),
+                    Brush.radialGradient(listOf(Color.White.copy(alpha = 0.10f), Color.Transparent), center = hl, radius = rr),
                     radius = rr,
                     center = hl,
                 )
@@ -87,11 +87,11 @@ fun LiquidGlass(
                 drawOutline(
                     outline,
                     Brush.linearGradient(
-                        listOf(Color.White.copy(alpha = 0.6f), Color.White.copy(alpha = 0.08f), accent.copy(alpha = (0.35f + 0.5f * p).coerceAtMost(1f))),
+                        listOf(Color.White.copy(alpha = 0.45f), Color.White.copy(alpha = 0.05f), accent.copy(alpha = (0.25f + 0.5f * p).coerceAtMost(1f))),
                         start = Offset.Zero,
                         end = Offset(size.width, size.height),
                     ),
-                    style = Stroke(2.dp.toPx()),
+                    style = Stroke(1.2.dp.toPx()),
                 )
             },
         content = content,

@@ -45,8 +45,9 @@ class ArtAssets(val image: ImageBitmap, val blurred: ImageBitmap, val colors: Sc
     }
 }
 
-fun paletteFor(mode: ColorMode, album: SceneColors?): SceneColors = when (mode) {
+fun paletteFor(mode: ColorMode, album: SceneColors?, custom: List<Int>): SceneColors = when (mode) {
     ColorMode.ALBUM, ColorMode.RAINBOW -> album ?: SceneColors.Default
+    ColorMode.CUSTOM -> SceneColors(Color(custom[0]), Color(custom[1]), Color(custom[2]))
     ColorMode.NEON -> SceneColors(Color(0xFF00E5FF), Color(0xFFFF00E5), Color(0xFF7C4DFF))
     ColorMode.SUNSET -> SceneColors(Color(0xFFFF6B35), Color(0xFFFF2E63), Color(0xFFFFC93C))
     ColorMode.OCEAN -> SceneColors(Color(0xFF00B4D8), Color(0xFF4361EE), Color(0xFF90E0EF))

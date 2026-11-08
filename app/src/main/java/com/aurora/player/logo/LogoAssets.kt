@@ -7,6 +7,7 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import com.aurora.player.settings.LogoHalo
 import com.aurora.player.settings.LogoSource
 import com.aurora.player.util.ImageFiles
 import java.io.File
@@ -18,13 +19,13 @@ class LogoAssets(val image: ImageBitmap, val shape: LogoShape)
 object LogoFactory {
     const val LOGO_FILE = "logo.img"
 
-    fun build(context: Context, source: LogoSource, text: String): LogoAssets? {
+    fun build(context: Context, source: LogoSource, text: String, halo: LogoHalo): LogoAssets? {
         val bmp = when (source) {
             LogoSource.TEXT -> textToBitmap(text)
             LogoSource.IMAGE -> ImageFiles.decode(File(context.filesDir, LOGO_FILE), 1024)?.let { prepareImage(it) }
                 ?: textToBitmap(text)
         }
-        val shape = LogoContourExtractor.extract(bmp) ?: return null
+        val shape = LogoContourExtractor.extract(bmp, halo) ?: return null
         return LogoAssets(bmp.asImageBitmap(), shape)
     }
 
